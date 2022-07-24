@@ -87,22 +87,7 @@ namespace Project_IPET.Services
 
                 #endregion
                 #region 沒有groupby前的指令(但rating會出錯，因為一個商品可能有多個評價導致顯示出錯)
-                string countSql = @"SELECT COUNT(1)
-FROM
-(
-	SELECT avg(ISNULL(cm.Rating,0)) Rating, p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.UnitPrice, p.UnitsInStock, p.Description, p.HotProduct, p.ProductAvailable, sc.SubCategoryName,c.CategoryName,pp.ProductImage,b.BrandName 
-	FROM Products p 
-	JOIN SubCategories sc ON p.SubCategoryID =sc.SubCategoryID 
-	JOIN Categories c ON sc.CategoryID = c.CategoryID 
-	JOIN Brand b ON p.BrandID = b.BrandID
-	LEFT JOIN  ProductImagePath pp ON p.ProductID =pp.ProductID
-	LEFT JOIN Comment cm ON p.ProductID = cm.ProductID
-    WHERE pp.IsMainImage = 1 {0}
-	GROUP BY p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.UnitPrice, p.UnitsInStock, p.Description, p.HotProduct, p.ProductAvailable, sc.SubCategoryName,c.CategoryName,pp.ProductImage,b.BrandName  
-) T";
-
-
-                string sql = @"SELECT avg(ISNULL(cm.Rating,0)) Rating, p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.UnitPrice, p.UnitsInStock, p.Description, p.HotProduct, p.ProductAvailable, sc.SubCategoryName,c.CategoryName,pp.ProductImage,b.BrandName  
+                string sql = @"SELECT avg(ISNULL(cm.Rating,0)) Rating, p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.UnitPrice, p.UnitsInStock, p.Description, p.HotProduct, p.ProductAvailable, sc.SubCategoryName,c.CategoryName,pp.ProductImage,b.BrandName, COUNT(1) OVER () AS TotalRecord
 FROM Products p 
 JOIN SubCategories sc ON p.SubCategoryID =sc.SubCategoryID 
 JOIN Categories c ON sc.CategoryID = c.CategoryID 
@@ -141,7 +126,6 @@ GROUP BY p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.U
                     Page = request.Pagination.Page,
                 };
 
-                result.Pagination.TotalRecord = (int)_dbConnection.ExecuteScalar(string.Format(countSql, where), param); //拿第一個cell
 
                 string orderBy = "";
                 switch (request.SortBy)
@@ -172,7 +156,27 @@ GROUP BY p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.U
                         break;
                 }
 
-                result.ProductList = _dbConnection.Query<ProductModel>(string.Format(sql, where, orderBy), param).ToList();
+                var tempResult = _dbConnection.Query(string.Format(sql, where, orderBy), param);
+
+
+                result.Pagination.TotalRecord = tempResult.FirstOrDefault().TotalRecord;
+                result.ProductList = tempResult.Select(t => new ProductModel
+                {
+                    ProductName = t.ProductName,
+                    ProductID = t.ProductID,
+                    BrandID = t.BrandID,
+                    Description = t.Description,
+                    SubCategoryID = t.SubCategoryID,
+                    ProductImage = t.ProductImage,
+                    UnitsInStock = t.UnitsInStock,
+                    BrandName = t.BrandName,
+                    CostPrice = t.CostPrice,
+                    HotProduct = t.HotProduct,
+                    ProductAvailable = t.ProductAvailable,
+                    Rating = t.Rating,
+                    UnitPrice = t.UnitPrice,
+
+                }).ToList();
                 #endregion
             }
             catch (Exception ex)
@@ -184,34 +188,31 @@ GROUP BY p.ProductID, p.ProductName, p.SubCategoryID, p.BrandID, p.CostPrice,p.U
         public List<CategoriesModel> GetCategories()
         {
             List<CategoriesModel> result = new List<CategoriesModel>();
-            List<SubCategoriesModel> subCat = new List<SubCategoriesModel>();
+
             try
             {
-                string sql = @"SELECT c.CategoryID,c.CategoryName,COUNT(p.ProductID) ProductCount
+                string sql = @"SELECT c.CategoryID,c.CategoryName,sc.SubCategoryID,sc.SubCategoryName,COUNT(p.ProductID) ProductCount
                                             FROM Categories c 
                                             JOIN SubCategories sc 
                                             ON c.CategoryID = sc.CategoryID 
                                             LEFT JOIN Products p
                                             ON sc.SubCategoryID = p.SubCategoryID
-                                            GROUP BY c.CategoryID,c.CategoryName
+                                            GROUP BY c.CategoryID,c.CategoryName,sc.SubCategoryID,sc.SubCategoryName
                                             ORDER BY c.CategoryID";
-                result = _dbConnection.Query<CategoriesModel>(sql).ToList();
+                var tempResult = _dbConnection.Query(sql).ToList();
 
-                string sql2 = @"SELECT * FROM SubCategories";
-                //List<SubCategoriesModel> subCat =new List<SubCategoriesModel>();
-                subCat = _dbConnection.Query<SubCategoriesModel>(sql2).ToList();
-                foreach (var categories in result)
+                result = tempResult.GroupBy(t => new { t.CategoryID, t.CategoryName }).Select(t => new CategoriesModel
                 {
-                    categories.SubCategories = new List<SubCategoriesModel>();
-                    //寫法1
-                    //把主分類用迴圈方式長出來讓子分類抓到CategoryId
-                    //categories.SubCategories.AddRange(subCat.Where(s => s.CategoryId == categories.CategoryId));
-                    //寫法2
-                    //Step1. 取得subCat中所有CategoryId = categories(主分類)的CategoryId
-                    var sub = subCat.Where(s => s.CategoryId == categories.CategoryId);
-                    //Step2. 把子分類加入主分類下的List
-                    categories.SubCategories.AddRange(sub);
-                }
+                    CategoryId = t.Key.CategoryID,
+                    CategoryName = t.Key.CategoryName,
+                    ProductCount = t.Sum(s => s.ProductCount),
+                    SubCategories = t.Select(s => new SubCategoriesModel
+                    {
+                        CategoryId = t.Key.CategoryID,
+                        SubCategoryId = s.SubCategoryID,
+                        SubCategoryName = s.SubCategoryName,
+                    }).ToList()
+                }).ToList();
             }
             catch (Exception ex)
             {
